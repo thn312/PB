@@ -240,6 +240,9 @@ struct BrowserScreen: View {
                 Toggle(isOn: $browser.adblock) {
                     Label("Block Ads & Trackers", systemImage: "shield.lefthalf.filled")
                 }
+                Toggle(isOn: $browser.allowApps) {
+                    Label("Allow Opening Apps", systemImage: "arrow.up.forward.app")
+                }
                 Button("History", systemImage: "clock") { sheet = .history }
                 Button("Check My IP", systemImage: "network") { tab.go("https://browserleaks.com/ip") }
                 Divider()

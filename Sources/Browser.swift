@@ -145,6 +145,10 @@ final class Browser: ObservableObject {
     @Published var activeID = ProxyStore.activeID
     /// No proxy: real IP, real location. Only ever on because the user picked it; a failing proxy never falls back to this.
     @Published var direct = UserDefaults.standard.bool(forKey: "p.direct")
+    /// Off by default: links stay in PB instead of opening other apps, which would bypass the proxy.
+    @Published var allowApps = UserDefaults.standard.bool(forKey: "allowApps") {
+        didSet { UserDefaults.standard.set(allowApps, forKey: "allowApps") }
+    }
     private var attempt = 0
 
     var activeProxy: ProxySettings? { proxies.first { $0.id == activeID } ?? proxies.first }
@@ -359,11 +363,19 @@ final class Tab: NSObject, ObservableObject, Identifiable, WKNavigationDelegate,
         browser?.history.record(url: webView.url, title: webView.title ?? "")
     }
 
-    // Never hand links to other apps (X, YouTube…): they'd run outside the proxy with the real IP.
+    // By default links never go to other apps (X, YouTube…): those run outside the proxy with the real IP.
+    // "Allow Opening Apps" in the menu turns that off.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
-        let scheme = navigationAction.request.url?.scheme?.lowercased() ?? ""
-        guard ["http", "https", "about", "blob", "data"].contains(scheme) else { return decisionHandler(.cancel) }
+        let allowApps = browser?.allowApps ?? false
+        let url = navigationAction.request.url
+        let scheme = url?.scheme?.lowercased() ?? ""
+        guard ["http", "https", "about", "blob", "data"].contains(scheme) else {
+            // tel:, mailto:, twitter://… only open on a tap, so a page can't launch apps on its own.
+            if allowApps, navigationAction.navigationType == .linkActivated, let url { UIApplication.shared.open(url) }
+            return decisionHandler(.cancel)
+        }
+        if allowApps { return decisionHandler(.allow) } // iOS may hand universal links (x.com…) to their app
         // shortcut: allow+2 is WebKit's private "allow without trying app link"; if a future iOS drops it, links may open apps again.
         decisionHandler(WKNavigationActionPolicy(rawValue: WKNavigationActionPolicy.allow.rawValue + 2) ?? .allow)
     }
@@ -388,6 +400,30 @@ final class Tab: NSObject, ObservableObject, Identifiable, WKNavigationDelegate,
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         browser?.newTab("", config: configuration)?.webView
+    }
+
+    // Our own long-press menu: iOS's default one can hand the link to Safari or another app (outside the proxy).
+    // shortcut: plain images (no link) get no menu, so no "Save Image"; add it if missed.
+    func webView(_ webView: WKWebView, contextMenuConfigurationForElement elementInfo: WKContextMenuElementInfo,
+                 completionHandler: @escaping @MainActor @Sendable (UIContextMenuConfiguration?) -> Void) {
+        guard let url = elementInfo.linkURL else { return completionHandler(nil) }
+        let allowApps = browser?.allowApps ?? false
+        completionHandler(UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in
+            var items = [
+                UIAction(title: "Open in New Tab", image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
+                    self?.browser?.newTab(url.absoluteString) // goes through the same app-link blocking as any load
+                },
+                UIAction(title: "Copy Link", image: UIImage(systemName: "doc.on.doc")) { _ in
+                    UIPasteboard.general.url = url
+                },
+            ]
+            if allowApps {
+                items.append(UIAction(title: "Open in App", image: UIImage(systemName: "arrow.up.forward.app")) { _ in
+                    UIApplication.shared.open(url)
+                })
+            }
+            return UIMenu(title: url.absoluteString, children: items)
+        })
     }
 
     func webViewDidClose(_ webView: WKWebView) {

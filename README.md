@@ -14,7 +14,7 @@ If the proxy fails, the app **loads no pages**, so your real IP is never used.
 
 **No Proxy mode** (Proxies → No Proxy, or ⋯ → Switch Proxy): browse with your real IP when you don't need a location. Nothing is spoofed then (real location and timezone match the real IP); ad blocking and YouTube background play still work. The app only goes direct when you pick it, never as a fallback for a dead proxy.
 
-Also: tabs, Chrome-style address bar and bottom toolbar, and a built-in **ad & tracker blocker** (WebKit content blocker, toggle with the 🛡 shield). Links never jump to other apps (X, YouTube…), since those apps would bypass the proxy.
+Also: tabs, Chrome-style address bar and bottom toolbar, and a built-in **ad & tracker blocker** (WebKit content blocker, toggle with the 🛡 shield). Links never jump to other apps (X, YouTube…), since those apps would bypass the proxy. To allow it, turn on ⋯ → **Allow Opening Apps** (off by default); app links then open their app, and long-press adds **Open in App**.
 
 ## History & suggestions
 - **History** (⋯ → History): pages you visited, grouped by day, searchable, swipe to delete, Clear to wipe. Stored only on the device.
