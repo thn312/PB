@@ -168,8 +168,11 @@ final class Browser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
     }
 
     private func report(_ e: Error) {
-        guard (e as NSError).code != NSURLErrorCancelled else { return } // a newer navigation replaced this one
-        error = "⚠️ " + e.localizedDescription
+        let e = e as NSError
+        if e.code == NSURLErrorCancelled { return } // a newer navigation replaced this one
+        if e.domain == "WebKitErrorDomain" && e.code == 102 { return } // we cancelled it in decidePolicyFor (e.g. twitter:// app link)
+        let url = e.userInfo[NSURLErrorFailingURLStringErrorKey] as? String ?? ""
+        error = "⚠️ \(e.localizedDescription) (\(e.domain) \(e.code)) \(url)"
     }
 
     // target="_blank" links open in the same view.
