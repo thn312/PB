@@ -27,6 +27,12 @@ struct ContentView: View {
         }
         .tint(.orange)
         .task { await browser.connect() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            browser.setBackground(true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            browser.setBackground(false)
+        }
         .sheet(item: $sheet) { s in
             switch s {
             case .settings: ProxyListView(browser: browser)

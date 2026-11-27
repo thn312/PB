@@ -14,6 +14,13 @@ If the proxy fails, the app **loads no pages**, so your real IP is never used.
 
 Also: tabs, Chrome-style address bar and bottom toolbar, and a built-in **ad & tracker blocker** (WebKit content blocker, toggle with the 🛡 shield). Links never jump to other apps (X, YouTube…), since those apps would bypass the proxy.
 
+## YouTube
+`Sources/youtube.js` (YouTube only):
+- **Background play**: keeps playing with the screen off or the app in the background (audio background mode + the page always looks visible).
+- **No ads** (when 🛡 is on): strips ad data from YouTube's player responses before the player reads them, hides ad boxes, and fast-forwards/skips anything that slips through.
+
+YouTube changes its ad delivery often. The app downloads the latest `youtube.js` from this repo (through the proxy) on every connect, so a fix pushed to `main` reaches the app without reinstalling. If the download fails, the copy bundled in the app is used.
+
 ## Build on GitHub (no Mac needed)
 1. Push this folder to a public GitHub repo (Actions minutes are free and unlimited for public repos).
 2. Open **Actions** → **Build IPA**, wait about 5 minutes, then download `PB-ipa` from Artifacts (or `PB.ipa` from Releases).

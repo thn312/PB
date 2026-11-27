@@ -98,6 +98,28 @@ struct Geo: Decodable {
     }
 }
 
+/// youtube.js: the newest copy from GitHub (so YouTube fixes ship without reinstalling), else the bundled one.
+enum YouTubeScript {
+    static let remote = URL(string: "https://raw.githubusercontent.com/thn312/PB/main/Sources/youtube.js")!
+
+    static func latest(via proxy: ProxyConfiguration) async -> String {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.proxyConfigurations = [proxy] // through the proxy, like everything else
+        cfg.timeoutIntervalForRequest = 6
+        let s = URLSession(configuration: cfg)
+        defer { s.finishTasksAndInvalidate() }
+        if let r = try? await s.data(from: remote), (r.1 as? HTTPURLResponse)?.statusCode == 200,
+           let js = String(data: r.0, encoding: .utf8), js.hasPrefix("// PB youtube.js") {
+            return js
+        }
+        return bundled
+    }
+
+    static var bundled: String {
+        Bundle.main.url(forResource: "youtube", withExtension: "js").flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+    }
+}
+
 struct BrowserError: LocalizedError {
     let errorDescription: String?
 }
@@ -109,10 +131,12 @@ final class Browser: ObservableObject {
     @Published var status = "Not connected"
     @Published var connecting = false
     @Published var adblock = UserDefaults.standard.object(forKey: "adblock") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(adblock, forKey: "adblock"); applyAdblock(reload: true) }
+        didSet { UserDefaults.standard.set(adblock, forKey: "adblock"); applyContent(reload: true) }
     }
     private var config: WKWebViewConfiguration?
     private var adRules: WKContentRuleList?
+    private var spoofJS = ""
+    private var youtubeJS = ""
 
     @Published var proxies = ProxyStore.all()
     @Published var activeID = ProxyStore.activeID
@@ -158,15 +182,17 @@ final class Browser: ObservableObject {
         connecting = true
         defer { if mine == attempt { connecting = false } }
         do {
+            async let yt = YouTubeScript.latest(via: proxy)
             let geo = try await Geo.lookup(via: proxy)
             guard mine == attempt else { return }
             guard let c = geo.coords, TimeZone(identifier: geo.timezone) != nil else {
                 throw BrowserError(errorDescription: "Could not read the proxy location")
             }
             config = try makeConfig(proxy: proxy, lat: c.0, lon: c.1, tz: geo.timezone)
+            youtubeJS = await yt
             if adRules == nil { adRules = try? await compileAdRules() } // a broken blocklist must not stop browsing
             guard mine == attempt else { return }
-            applyAdblock(reload: false)
+            applyContent(reload: false)
             let flag = String(String.UnicodeScalarView(geo.country.unicodeScalars.compactMap { UnicodeScalar(127397 + $0.value) }))
             status = "\(flag) \(geo.city), \(geo.region) · \(geo.ip) · \(p.label)"
             newTab("https://browserleaks.com/ip")
@@ -183,7 +209,7 @@ final class Browser: ObservableObject {
         // JSON-encode values from the network so they can't inject JS.
         let cfg = String(decoding: try JSONSerialization.data(withJSONObject: ["lat": lat, "lon": lon, "tz": tz]), as: UTF8.self)
         // Wrapped so `C` never collides with a page's own globals.
-        let js = "(C => {\n" + (try String(contentsOf: url, encoding: .utf8)) + "\n})(\(cfg));"
+        spoofJS = "(C => {\n" + (try String(contentsOf: url, encoding: .utf8)) + "\n})(\(cfg));"
 
         let store = WKWebsiteDataStore.default()
         store.proxyConfigurations = [proxy]
@@ -193,8 +219,6 @@ final class Browser: ObservableObject {
         // Look exactly like Safari: a bare WKWebView UA lacks "Version/x Safari/604.1", which sites use to flag in-app browsers.
         let v = UIDevice.current.systemVersion.split(separator: ".").prefix(2).joined(separator: ".")
         config.applicationNameForUserAgent = "Version/\(v.contains(".") ? v : v + ".0") Mobile/15E148 Safari/604.1"
-        config.userContentController.addUserScript(
-            WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         return config
     }
 
@@ -207,14 +231,24 @@ final class Browser: ObservableObject {
         return try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "ads", encodedContentRuleList: json)
     }
 
-    private func applyAdblock(reload: Bool) {
+    /// (Re)installs page scripts and the ad rule list; the YouTube script needs to know if ad blocking is on.
+    private func applyContent(reload: Bool) {
         var controllers = tabs.map { $0.webView.configuration.userContentController }
         if let c = config?.userContentController { controllers.append(c) }
+        let yt = "(P => {\n" + youtubeJS + "\n})({\"adblock\": \(adblock)});"
         for c in controllers {
+            c.removeAllUserScripts()
+            c.addUserScript(WKUserScript(source: spoofJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            c.addUserScript(WKUserScript(source: yt, injectionTime: .atDocumentStart, forMainFrameOnly: false))
             c.removeAllContentRuleLists()
             if adblock, let adRules { c.add(adRules) }
         }
         if reload { current?.webView.reload() }
+    }
+
+    /// iOS pauses page video when the app leaves the screen; youtube.js undoes that for YouTube.
+    func setBackground(_ on: Bool) {
+        for t in tabs { t.webView.evaluateJavaScript("window.__pbBg && __pbBg(\(on))", completionHandler: nil) }
     }
 
     @discardableResult

@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: node tests/spoof.test.js && node tests/source.test.js
+      - run: for t in tests/*.test.js; do node "$t" || exit 1; done
       - run: brew install xcodegen && xcodegen generate
       - name: Build (unsigned)
         # Version 1.0.<run number> so SideStore sees every build as an update.
