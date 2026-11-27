@@ -16,11 +16,24 @@ Also: tabs, Chrome-style address bar and bottom toolbar, and a built-in **ad & t
 
 ## Build on GitHub (no Mac needed)
 1. Push this folder to a public GitHub repo (Actions minutes are free and unlimited for public repos).
-2. Open **Actions** → **Build IPA**, wait about 5 minutes, then download `PB-ipa` from Artifacts.
+2. Open **Actions** → **Build IPA**, wait about 5 minutes, then download `PB-ipa` from Artifacts (or `PB.ipa` from Releases).
 3. The IPA is unsigned. Install it on your iPhone with **Sideloadly** (has a Windows version) and your Apple ID.
    - Free Apple ID: the app expires after 7 days and must be re-signed.
    - Apple Developer account ($99/year): the app lasts 1 year.
 4. On the iPhone: Settings → General → VPN & Device Management → trust your Apple ID. Turn on **Developer Mode** if iOS asks.
+
+## Install with SideStore (free, auto-refresh, no PC after setup)
+Every push to `main` publishes a GitHub Release with `PB.ipa` and a SideStore source:
+
+```
+https://github.com/thn312/PB/releases/latest/download/source.json
+```
+
+1. iPhone: install **LocalDevVPN** from the App Store.
+2. PC: install SideStore with **iloader** (follow docs.sidestore.io), signing in with your Apple ID.
+3. iPhone: trust your Apple ID (Settings → General → VPN & Device Management), open LocalDevVPN and connect, then open SideStore.
+4. SideStore → **Sources** → **+** → paste the URL above → install **PB**. New builds show up as updates.
+5. Keep LocalDevVPN on and Background App Refresh enabled for SideStore so it re-signs before the 7 days run out.
 
 ## After installing, verify
 - Open the app, tap **Proxies** (or ⋯ → Proxies), tap **+**, enter the proxy (a **US residential** proxy works best), then tap Save. Add more proxies the same way and switch with ⋯ → Switch Proxy.
