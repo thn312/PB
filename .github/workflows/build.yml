@@ -20,8 +20,8 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/Release-iphoneos/USBrowser.app Payload/
-          zip -qr USBrowser-unsigned.ipa Payload
+          zip -qr PB-unsigned.ipa Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: USBrowser-ipa
-          path: USBrowser-unsigned.ipa
+          name: PB-ipa
+          path: PB-unsigned.ipa

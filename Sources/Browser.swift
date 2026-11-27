@@ -2,31 +2,21 @@ import Combine
 import Foundation
 import Network
 import Security
+import UIKit
 import WebKit
 
-struct ProxySettings {
+struct ProxySettings: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name = ""
     var type = "socks5" // "socks5" | "http"
     var host = ""
     var port = 1080
     var user = ""
-    var pass = ""
+    var pass = "" // never encoded: lives in the Keychain
 
-    static func load() -> ProxySettings {
-        let d = UserDefaults.standard
-        return ProxySettings(
-            type: d.string(forKey: "p.type") ?? "socks5",
-            host: d.string(forKey: "p.host") ?? "",
-            port: d.object(forKey: "p.port") as? Int ?? 1080,
-            user: d.string(forKey: "p.user") ?? "",
-            pass: Keychain.get("p.pass"))
-    }
+    private enum CodingKeys: String, CodingKey { case id, name, type, host, port, user }
 
-    func save() {
-        let d = UserDefaults.standard
-        d.set(type, forKey: "p.type"); d.set(host, forKey: "p.host")
-        d.set(port, forKey: "p.port"); d.set(user, forKey: "p.user")
-        Keychain.set("p.pass", pass)
-    }
+    var label: String { name.isEmpty ? "\(host):\(port)" : name }
 
     func configuration() -> ProxyConfiguration? {
         guard !host.isEmpty, let p = UInt16(exactly: port), let port = NWEndpoint.Port(rawValue: p) else { return nil }
@@ -34,6 +24,39 @@ struct ProxySettings {
         let c = type == "http" ? ProxyConfiguration(httpCONNECTProxy: ep) : ProxyConfiguration(socksv5Proxy: ep)
         if !user.isEmpty { c.applyCredential(username: user, password: pass) }
         return c
+    }
+}
+
+/// Saved proxies: the list in UserDefaults, each password in the Keychain under its id.
+enum ProxyStore {
+    private static let d = UserDefaults.standard
+
+    static func all() -> [ProxySettings] {
+        if let data = d.data(forKey: "proxies"), var list = try? JSONDecoder().decode([ProxySettings].self, from: data) {
+            for i in list.indices { list[i].pass = Keychain.get("p.pass.\(list[i].id)") }
+            return list
+        }
+        // Migrate the single proxy saved by older versions so the user doesn't have to re-enter it.
+        guard let host = d.string(forKey: "p.host"), !host.isEmpty else { return [] }
+        let old = ProxySettings(
+            type: d.string(forKey: "p.type") ?? "socks5", host: host,
+            port: d.object(forKey: "p.port") as? Int ?? 1080,
+            user: d.string(forKey: "p.user") ?? "", pass: Keychain.get("p.pass"))
+        save([old])
+        activeID = old.id
+        return [old]
+    }
+
+    static func save(_ list: [ProxySettings]) {
+        for p in list { Keychain.set("p.pass.\(p.id)", p.pass) }
+        d.set(try? JSONEncoder().encode(list), forKey: "proxies")
+    }
+
+    static func forget(_ p: ProxySettings) { Keychain.delete("p.pass.\(p.id)") }
+
+    static var activeID: UUID? {
+        get { d.string(forKey: "p.active").flatMap(UUID.init(uuidString:)) }
+        set { d.set(newValue?.uuidString, forKey: "p.active") }
     }
 }
 
@@ -47,8 +70,9 @@ enum Keychain {
         SecItemCopyMatching(q as CFDictionary, &r)
         return (r as? Data).flatMap { String(data: $0, encoding: .utf8) } ?? ""
     }
+    static func delete(_ k: String) { SecItemDelete(base(k) as CFDictionary) }
     static func set(_ k: String, _ v: String) {
-        SecItemDelete(base(k) as CFDictionary)
+        delete(k)
         var q = base(k); q[kSecValueData as String] = Data(v.utf8)
         SecItemAdd(q as CFDictionary, nil)
     }
@@ -90,28 +114,65 @@ final class Browser: ObservableObject {
     private var config: WKWebViewConfiguration?
     private var adRules: WKContentRuleList?
 
+    @Published var proxies = ProxyStore.all()
+    @Published var activeID = ProxyStore.activeID
+    private var attempt = 0
+
+    var activeProxy: ProxySettings? { proxies.first { $0.id == activeID } ?? proxies.first }
+
+    func use(_ p: ProxySettings) {
+        activeID = p.id
+        ProxyStore.activeID = p.id
+        Task { await connect() }
+    }
+
+    func saveProxy(_ p: ProxySettings) {
+        if let i = proxies.firstIndex(where: { $0.id == p.id }) { proxies[i] = p } else { proxies.append(p) }
+        ProxyStore.save(proxies)
+        if p.id == activeProxy?.id { use(p) } // edited the one in use (or the first one): reconnect with it
+    }
+
+    func deleteProxies(at offsets: IndexSet) {
+        let gone = offsets.map { proxies[$0] }
+        proxies.remove(atOffsets: offsets)
+        gone.forEach(ProxyStore.forget)
+        ProxyStore.save(proxies)
+        if gone.contains(where: { $0.id == activeID }) || proxies.isEmpty {
+            activeID = proxies.first?.id
+            ProxyStore.activeID = activeID
+            Task { await connect() }
+        }
+    }
+
     /// Fail closed: no tab exists until the proxy is verified, so the real IP is never used.
     func connect() async {
+        attempt += 1
+        let mine = attempt // a newer switch wins; an older lookup that finishes late is dropped
         tabs = []; current = nil; config = nil
-        guard let proxy = ProxySettings.load().configuration() else {
+        guard let p = activeProxy, let proxy = p.configuration() else {
             status = "No proxy set"
             return
         }
-        status = "Checking proxy…"
+        activeID = p.id
+        status = "Checking \(p.label)…"
         connecting = true
-        defer { connecting = false }
+        defer { if mine == attempt { connecting = false } }
         do {
             let geo = try await Geo.lookup(via: proxy)
+            guard mine == attempt else { return }
             guard let c = geo.coords, TimeZone(identifier: geo.timezone) != nil else {
                 throw BrowserError(errorDescription: "Could not read the proxy location")
             }
             config = try makeConfig(proxy: proxy, lat: c.0, lon: c.1, tz: geo.timezone)
             if adRules == nil { adRules = try? await compileAdRules() } // a broken blocklist must not stop browsing
+            guard mine == attempt else { return }
             applyAdblock(reload: false)
-            status = "\(geo.country == "US" ? "🇺🇸" : "⚠️ \(geo.country)") \(geo.city), \(geo.region) · \(geo.ip)"
+            let flag = String(String.UnicodeScalarView(geo.country.unicodeScalars.compactMap { UnicodeScalar(127397 + $0.value) }))
+            status = "\(flag) \(geo.city), \(geo.region) · \(geo.ip) · \(p.label)"
             newTab("https://browserleaks.com/ip")
         } catch {
-            status = "Proxy error: \(error.localizedDescription)"
+            guard mine == attempt else { return }
+            status = "Proxy error (\(p.label)): \(error.localizedDescription)"
         }
     }
 
@@ -128,6 +189,9 @@ final class Browser: ObservableObject {
         store.proxyConfigurations = [proxy]
         let config = WKWebViewConfiguration()
         config.websiteDataStore = store
+        // Look exactly like Safari: a bare WKWebView UA lacks "Version/x Safari/604.1", which sites use to flag in-app browsers.
+        let v = UIDevice.current.systemVersion.split(separator: ".").prefix(2).joined(separator: ".")
+        config.applicationNameForUserAgent = "Version/\(v.contains(".") ? v : v + ".0") Mobile/15E148 Safari/604.1"
         config.userContentController.addUserScript(
             WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         return config

@@ -29,7 +29,7 @@ struct ContentView: View {
         .task { await browser.connect() }
         .sheet(item: $sheet) { s in
             switch s {
-            case .settings: SettingsView { Task { await browser.connect() } }
+            case .settings: ProxyListView(browser: browser)
             case .tabs: TabsView(browser: browser)
             }
         }
@@ -44,7 +44,7 @@ struct ConnectScreen: View {
         VStack(spacing: 16) {
             Image(systemName: "globe.americas.fill")
                 .font(.system(size: 64)).foregroundStyle(.orange)
-            Text("US Browser").font(.largeTitle.bold())
+            Text("PB").font(.largeTitle.bold())
             Text(browser.status)
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             if browser.connecting {
@@ -52,7 +52,7 @@ struct ConnectScreen: View {
             } else {
                 Button("Reconnect") { Task { await browser.connect() } }
                     .buttonStyle(.borderedProminent)
-                Button("Proxy Settings") { sheet = .settings }
+                Button("Proxies") { sheet = .settings }
             }
         }
         .padding(32)
@@ -186,7 +186,16 @@ struct BrowserScreen: View {
                 }
                 Button("Check My IP", systemImage: "network") { tab.go("https://browserleaks.com/ip") }
                 Divider()
-                Button("Proxy Settings", systemImage: "gearshape") { sheet = .settings }
+                if browser.proxies.count > 1 {
+                    Menu("Switch Proxy", systemImage: "arrow.triangle.swap") {
+                        ForEach(browser.proxies) { p in
+                            Button { browser.use(p) } label: {
+                                if p.id == browser.activeProxy?.id { Label(p.label, systemImage: "checkmark") } else { Text(p.label) }
+                            }
+                        }
+                    }
+                }
+                Button("Proxies", systemImage: "gearshape") { sheet = .settings }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -256,35 +265,98 @@ struct TabRow: View {
     }
 }
 
-struct SettingsView: View {
+struct ProxyListView: View {
+    @ObservedObject var browser: Browser
     @Environment(\.dismiss) private var dismiss
-    @State private var s = ProxySettings.load()
-    let onSave: () -> Void
+    @State private var editing: ProxySettings?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(browser.proxies) { p in
+                    let active = p.id == browser.activeProxy?.id
+                    HStack(spacing: 12) {
+                        Button { browser.use(p); dismiss() } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(active ? Color.orange : Color.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(p.label).foregroundStyle(.primary)
+                                    Text("\(p.type.uppercased()) · \(p.host):\(String(p.port))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(active ? "\(p.label), in use" : "Use \(p.label)")
+                        Button { editing = p } label: { Image(systemName: "info.circle") }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Edit \(p.label)")
+                    }
+                }
+                .onDelete { browser.deleteProxies(at: $0) }
+            }
+            .overlay {
+                if browser.proxies.isEmpty {
+                    ContentUnavailableView("No Proxies", systemImage: "network",
+                                           description: Text("Tap + to add a proxy."))
+                }
+            }
+            .navigationTitle("Proxies")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    Button { editing = ProxySettings() } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add proxy")
+                }
+            }
+            .sheet(item: $editing) { p in
+                ProxyEditor(proxy: p, isNew: !browser.proxies.contains { $0.id == p.id }) { browser.saveProxy($0) }
+            }
+        }
+    }
+}
+
+struct ProxyEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var proxy: ProxySettings
+    let isNew: Bool
+    let onSave: (ProxySettings) -> Void
 
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Type", selection: $s.type) {
+                TextField("Name (e.g. Dallas residential)", text: $proxy.name)
+                Picker("Type", selection: $proxy.type) {
                     Text("SOCKS5").tag("socks5")
                     Text("HTTP").tag("http")
                 }
-                TextField("Host", text: $s.host)
+                TextField("Host", text: $proxy.host)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("Port", value: $s.port, format: .number.grouping(.never))
+                TextField("Port", value: $proxy.port, format: .number.grouping(.never))
                     .keyboardType(.numberPad)
-                TextField("Username (optional)", text: $s.user)
+                TextField("Username (optional)", text: $proxy.user)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField("Password (optional)", text: $s.pass)
+                SecureField("Password (optional)", text: $proxy.pass)
                 Section {
-                    Text("Location and timezone are taken from the proxy IP automatically. A US residential proxy works best.")
+                    Text("Location and timezone are taken from the proxy IP automatically. Residential proxies work best.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("Proxy")
+            .navigationTitle(isNew ? "New Proxy" : "Edit Proxy")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save & Connect") { s.save(); onSave(); dismiss() }
+                    Button("Save") {
+                        proxy.host = proxy.host.trimmingCharacters(in: .whitespaces)
+                        onSave(proxy)
+                        dismiss()
+                    }
+                    .disabled(proxy.configuration() == nil) // empty host or bad port
                 }
             }
         }
