@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Network
 import Security
@@ -78,34 +79,43 @@ struct BrowserError: LocalizedError {
 }
 
 @MainActor
-final class Browser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
-    @Published var webView: WKWebView?
+final class Browser: ObservableObject {
+    @Published var tabs: [Tab] = []
+    @Published var current: Tab?
     @Published var status = "Not connected"
-    @Published var address = ""
-    @Published var error = ""
+    @Published var connecting = false
+    @Published var adblock = UserDefaults.standard.object(forKey: "adblock") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(adblock, forKey: "adblock"); applyAdblock(reload: true) }
+    }
+    private var config: WKWebViewConfiguration?
+    private var adRules: WKContentRuleList?
 
-    /// Fail closed: no webview exists until the proxy is verified, so the real IP is never used.
+    /// Fail closed: no tab exists until the proxy is verified, so the real IP is never used.
     func connect() async {
-        webView = nil
+        tabs = []; current = nil; config = nil
         guard let proxy = ProxySettings.load().configuration() else {
-            status = "No proxy set — tap ⚙️"
+            status = "No proxy set"
             return
         }
         status = "Checking proxy…"
+        connecting = true
+        defer { connecting = false }
         do {
             let geo = try await Geo.lookup(via: proxy)
             guard let c = geo.coords, TimeZone(identifier: geo.timezone) != nil else {
                 throw BrowserError(errorDescription: "Could not read the proxy location")
             }
-            webView = try makeWebView(proxy: proxy, lat: c.0, lon: c.1, tz: geo.timezone)
-            status = "\(geo.country == "US" ? "🇺🇸" : "⚠️ \(geo.country)") \(geo.city), \(geo.region) · \(geo.ip) · \(geo.timezone)"
-            go(address.isEmpty ? "https://browserleaks.com/ip" : address)
+            config = try makeConfig(proxy: proxy, lat: c.0, lon: c.1, tz: geo.timezone)
+            if adRules == nil { adRules = try? await compileAdRules() } // a broken blocklist must not stop browsing
+            applyAdblock(reload: false)
+            status = "\(geo.country == "US" ? "🇺🇸" : "⚠️ \(geo.country)") \(geo.city), \(geo.region) · \(geo.ip)"
+            newTab("https://browserleaks.com/ip")
         } catch {
             status = "Proxy error: \(error.localizedDescription)"
         }
     }
 
-    private func makeWebView(proxy: ProxyConfiguration, lat: Double, lon: Double, tz: String) throws -> WKWebView {
+    private func makeConfig(proxy: ProxyConfiguration, lat: Double, lon: Double, tz: String) throws -> WKWebViewConfiguration {
         guard let url = Bundle.main.url(forResource: "spoof", withExtension: "js") else {
             throw BrowserError(errorDescription: "spoof.js is missing")
         }
@@ -120,16 +130,76 @@ final class Browser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
         config.websiteDataStore = store
         config.userContentController.addUserScript(
             WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: false))
-        let wv = WKWebView(frame: .zero, configuration: config)
-        wv.navigationDelegate = self
-        wv.uiDelegate = self
-        wv.allowsBackForwardNavigationGestures = true
-        return wv
+        return config
+    }
+
+    // shortcut: recompiles the ~3.5k-rule list on every launch (well under a second); cache by app version if it gets slow.
+    private func compileAdRules() async throws -> WKContentRuleList? {
+        guard let url = Bundle.main.url(forResource: "blocklist", withExtension: "json") else {
+            throw BrowserError(errorDescription: "blocklist.json is missing")
+        }
+        let json = try String(contentsOf: url, encoding: .utf8)
+        return try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "ads", encodedContentRuleList: json)
+    }
+
+    private func applyAdblock(reload: Bool) {
+        var controllers = tabs.map { $0.webView.configuration.userContentController }
+        if let c = config?.userContentController { controllers.append(c) }
+        for c in controllers {
+            c.removeAllContentRuleLists()
+            if adblock, let adRules { c.add(adRules) }
+        }
+        if reload { current?.webView.reload() }
+    }
+
+    @discardableResult
+    func newTab(_ address: String = "https://www.google.com", config: WKWebViewConfiguration? = nil) -> Tab? {
+        guard let config = config ?? self.config else { return nil }
+        let tab = Tab(config: config, browser: self)
+        tabs.append(tab)
+        current = tab
+        if !address.isEmpty { tab.go(address) }
+        return tab
+    }
+
+    func close(_ tab: Tab) {
+        tab.webView.stopLoading()
+        tabs.removeAll { $0 === tab }
+        if current === tab { current = tabs.last }
+        if tabs.isEmpty { newTab() }
+    }
+}
+
+@MainActor
+final class Tab: NSObject, ObservableObject, Identifiable, WKNavigationDelegate, WKUIDelegate {
+    let webView: WKWebView
+    weak var browser: Browser?
+    @Published var title = ""
+    @Published var url: URL?
+    @Published var progress = 0.0
+    @Published var isLoading = false
+    @Published var canGoBack = false
+    @Published var canGoForward = false
+    @Published var error = ""
+
+    init(config: WKWebViewConfiguration, browser: Browser) {
+        webView = WKWebView(frame: .zero, configuration: config)
+        self.browser = browser
+        super.init()
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        webView.publisher(for: \.title).map { $0 ?? "" }.assign(to: &$title)
+        webView.publisher(for: \.url).assign(to: &$url)
+        webView.publisher(for: \.estimatedProgress).assign(to: &$progress)
+        webView.publisher(for: \.isLoading).assign(to: &$isLoading)
+        webView.publisher(for: \.canGoBack).assign(to: &$canGoBack)
+        webView.publisher(for: \.canGoForward).assign(to: &$canGoForward)
     }
 
     func go(_ input: String) {
         let t = input.trimmingCharacters(in: .whitespaces)
-        guard !t.isEmpty, let wv = webView else { return }
+        guard !t.isEmpty else { return }
         let url: URL?
         if t.contains("://") {
             url = URL(string: t)
@@ -142,11 +212,10 @@ final class Browser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
         }
         guard let url else { error = "Invalid address: \(t)"; return }
         error = ""
-        wv.load(URLRequest(url: url))
+        webView.load(URLRequest(url: url))
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        address = webView.url?.absoluteString ?? address
         error = ""
     }
 
@@ -175,10 +244,13 @@ final class Browser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
         error = "⚠️ \(e.localizedDescription) (\(e.domain) \(e.code)) \(url)"
     }
 
-    // target="_blank" links open in the same view.
+    // target="_blank" and window.open: open a new tab. WebKit requires using the given configuration.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        webView.load(navigationAction.request)
-        return nil
+        browser?.newTab("", config: configuration)?.webView
+    }
+
+    func webViewDidClose(_ webView: WKWebView) {
+        browser?.close(self)
     }
 }
