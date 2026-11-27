@@ -20,6 +20,12 @@ Also: tabs, Chrome-style address bar and bottom toolbar, and a built-in **ad & t
 - **History** (⋯ → History): pages you visited, grouped by day, searchable, swipe to delete, Clear to wipe. Stored only on the device.
 - **Suggestions while typing**: matching pages from history plus Google search suggestions. Suggestion requests go through the active proxy (or direct in No Proxy mode), same as the tabs.
 
+## Cookies & site data (iOS)
+⋯ → **Cookies & Site Data** for the current site:
+- list its cookies, swipe to delete one;
+- **Copy / Export** them as JSON in the Cookie-Editor / EditThisCookie format (importable into Chrome and other tools);
+- **Clear Cookies & Data** for this site, or **Clear All Website Data** (signs you out; history is kept).
+
 ## YouTube
 `Sources/youtube.js` (YouTube only):
 - **Background play**: keeps playing with the screen off or the app in the background (audio background mode + the page always looks visible).

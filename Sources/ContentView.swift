@@ -9,7 +9,7 @@ struct WebViewHost: UIViewRepresentable {
 
 struct ContentView: View {
     enum Sheet: String, Identifiable {
-        case settings, tabs, history
+        case settings, tabs, history, siteData
         var id: String { rawValue }
     }
 
@@ -38,6 +38,7 @@ struct ContentView: View {
             case .settings: ProxyListView(browser: browser)
             case .tabs: TabsView(browser: browser)
             case .history: HistoryView(browser: browser, history: browser.history)
+            case .siteData: SiteDataView(site: SiteData.site(of: browser.current?.url?.host() ?? "")) { browser.current?.webView.reload() }
             }
         }
     }
@@ -244,6 +245,7 @@ struct BrowserScreen: View {
                     Label("Allow Opening Apps", systemImage: "arrow.up.forward.app")
                 }
                 Button("History", systemImage: "clock") { sheet = .history }
+                Button("Cookies & Site Data", systemImage: "doc.text.magnifyingglass") { sheet = .siteData }
                 Button("Check My IP", systemImage: "network") { tab.go("https://browserleaks.com/ip") }
                 Divider()
                 if !browser.proxies.isEmpty {
@@ -500,5 +502,93 @@ struct HistoryView: View {
                 Button("Clear History", role: .destructive) { history.clear() }
             }
         }
+    }
+}
+
+struct SiteDataView: View {
+    let site: String
+    let onCleared: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var cookies: [HTTPCookie] = []
+    @State private var loaded = false
+    @State private var copied = false
+    @State private var confirm: Confirm?
+
+    enum Confirm: Identifiable {
+        case site, all
+        var id: Self { self }
+    }
+
+    private var json: String { SiteData.exportJSON(cookies) }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        UIPasteboard.general.string = json
+                        copied = true
+                    } label: {
+                        Label(copied ? "Copied" : "Copy Cookies (JSON)", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
+                    .disabled(cookies.isEmpty)
+                    ShareLink(item: json, preview: SharePreview("Cookies for \(site)")) {
+                        Label("Export Cookies…", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(cookies.isEmpty)
+                } footer: {
+                    Text("Cookie-Editor / EditThisCookie format. Cookies are logins: anyone who has them is signed in as you.")
+                }
+
+                Section("\(cookies.count) cookies") {
+                    if loaded && cookies.isEmpty {
+                        Text("No cookies for this site.").foregroundStyle(.secondary)
+                    }
+                    ForEach(cookies, id: \.self) { c in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(c.name).font(.body.monospaced()).lineLimit(1)
+                            Text("\(c.domain) · \(c.expiresDate.map { "expires " + $0.formatted(date: .abbreviated, time: .omitted) } ?? "session")")
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .onDelete { offsets in
+                        let gone = offsets.map { cookies[$0] }
+                        cookies.remove(atOffsets: offsets)
+                        Task { for c in gone { await SiteData.delete(c) } }
+                    }
+                }
+
+                Section {
+                    Button("Clear Cookies & Data for \(site)", role: .destructive) { confirm = .site }
+                    Button("Clear All Website Data", role: .destructive) { confirm = .all }
+                } footer: {
+                    Text("Clearing signs you out. Browsing history is kept.")
+                }
+            }
+            .navigationTitle(site.isEmpty ? "Site Data" : site)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .task { await reload() }
+            .confirmationDialog(confirm == .all ? "Clear data for all sites?" : "Clear data for \(site)?",
+                                isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
+                                titleVisibility: .visible) {
+                Button(confirm == .all ? "Clear All Website Data" : "Clear \(site)", role: .destructive) {
+                    let which = confirm
+                    Task {
+                        if which == .all { await SiteData.clearAll() } else { await SiteData.clear(site: site) }
+                        await reload()
+                        onCleared()
+                    }
+                }
+            } message: {
+                Text("You'll be signed out. This can't be undone.")
+            }
+        }
+    }
+
+    private func reload() async {
+        cookies = site.isEmpty ? [] : await SiteData.cookies(for: site)
+        loaded = true
+        copied = false
     }
 }
