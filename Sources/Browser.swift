@@ -150,6 +150,15 @@ final class Browser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
         error = ""
     }
 
+    // Never hand links to other apps (X, YouTube…): they'd run outside the proxy with the real IP.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+        let scheme = navigationAction.request.url?.scheme?.lowercased() ?? ""
+        guard ["http", "https", "about", "blob", "data"].contains(scheme) else { return decisionHandler(.cancel) }
+        // shortcut: allow+2 is WebKit's private "allow without trying app link"; if a future iOS drops it, links may open apps again.
+        decisionHandler(WKNavigationActionPolicy(rawValue: WKNavigationActionPolicy.allow.rawValue + 2) ?? .allow)
+    }
+
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         report(error)
     }
