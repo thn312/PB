@@ -31,7 +31,7 @@ struct ProxySettings {
     func configuration() -> ProxyConfiguration? {
         guard !host.isEmpty, let p = UInt16(exactly: port), let port = NWEndpoint.Port(rawValue: p) else { return nil }
         let ep = NWEndpoint.hostPort(host: .init(host), port: port)
-        var c = type == "http" ? ProxyConfiguration(httpCONNECTProxy: ep) : ProxyConfiguration(socksv5Proxy: ep)
+        let c = type == "http" ? ProxyConfiguration(httpCONNECTProxy: ep) : ProxyConfiguration(socksv5Proxy: ep)
         if !user.isEmpty { c.applyCredential(username: user, password: pass) }
         return c
     }

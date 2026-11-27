@@ -128,7 +128,9 @@ struct BrowserScreen: View {
                             .accessibilityLabel("Clear")
                         }
                     } else {
-                        Button { tab.isLoading ? tab.webView.stopLoading() : tab.webView.reload() } label: {
+                        Button {
+                            if tab.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
+                        } label: {
                             Image(systemName: tab.isLoading ? "xmark" : "arrow.clockwise")
                                 .font(.footnote.weight(.semibold))
                         }
