@@ -12,7 +12,13 @@ A browser that runs through a proxy and automatically spoofs location, timezone 
 
 If the proxy fails, the app **loads no pages**, so your real IP is never used.
 
+**No Proxy mode** (Proxies → No Proxy, or ⋯ → Switch Proxy): browse with your real IP when you don't need a location. Nothing is spoofed then (real location and timezone match the real IP); ad blocking and YouTube background play still work. The app only goes direct when you pick it, never as a fallback for a dead proxy.
+
 Also: tabs, Chrome-style address bar and bottom toolbar, and a built-in **ad & tracker blocker** (WebKit content blocker, toggle with the 🛡 shield). Links never jump to other apps (X, YouTube…), since those apps would bypass the proxy.
+
+## History & suggestions
+- **History** (⋯ → History): pages you visited, grouped by day, searchable, swipe to delete, Clear to wipe. Stored only on the device.
+- **Suggestions while typing**: matching pages from history plus Google search suggestions. Suggestion requests go through the active proxy (or direct in No Proxy mode), same as the tabs.
 
 ## YouTube
 `Sources/youtube.js` (YouTube only):

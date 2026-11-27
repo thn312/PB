@@ -9,7 +9,7 @@ struct WebViewHost: UIViewRepresentable {
 
 struct ContentView: View {
     enum Sheet: String, Identifiable {
-        case settings, tabs
+        case settings, tabs, history
         var id: String { rawValue }
     }
 
@@ -37,6 +37,7 @@ struct ContentView: View {
             switch s {
             case .settings: ProxyListView(browser: browser)
             case .tabs: TabsView(browser: browser)
+            case .history: HistoryView(browser: browser, history: browser.history)
             }
         }
     }
@@ -70,9 +71,17 @@ struct BrowserScreen: View {
     @ObservedObject var tab: Tab
     @Binding var sheet: ContentView.Sheet?
     @State private var text = ""
+    @State private var suggestions: [String] = []
     @FocusState private var editing: Bool
 
     private var host: String { tab.url?.host() ?? "" }
+    /// Typing something new (not just the selected current URL).
+    private var typing: Bool { editing && !text.isEmpty && text != tab.url?.absoluteString }
+
+    private func open(_ input: String) {
+        tab.go(input)
+        editing = false
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -87,8 +96,16 @@ struct BrowserScreen: View {
                         .onTapGesture { tab.error = "" }
                         .accessibilityHint("Tap to dismiss")
                 }
+                if typing { suggestionList }
             }
             if !editing { bottomBar }
+        }
+        .task(id: typing ? text : "") {
+            guard typing else { suggestions = []; return }
+            try? await Task.sleep(for: .milliseconds(200)) // wait until the user pauses typing
+            guard !Task.isCancelled, let session = browser.session else { return }
+            let result = await Suggest.google(text, session: session)
+            if !Task.isCancelled { suggestions = result }
         }
         .onAppear { text = host }
         .onChange(of: tab.url) { _, _ in if !editing { text = host } }
@@ -164,6 +181,39 @@ struct BrowserScreen: View {
         .background(.bar)
     }
 
+    private var suggestionList: some View {
+        List {
+            let visited = browser.history.matches(text)
+            if !visited.isEmpty {
+                Section("History") {
+                    ForEach(visited) { e in
+                        Button { open(e.url) } label: {
+                            suggestionRow("clock", e.title.isEmpty ? e.url : e.title, detail: e.url)
+                        }
+                    }
+                }
+            }
+            Section("Search") {
+                Button { open(text) } label: { suggestionRow("magnifyingglass", text) }
+                ForEach(suggestions.filter { $0 != text }, id: \.self) { s in
+                    Button { open(s) } label: { suggestionRow("magnifyingglass", s) }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .background(Color(.systemBackground))
+    }
+
+    private func suggestionRow(_ icon: String, _ title: String, detail: String? = nil) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).lineLimit(1).foregroundStyle(.primary)
+                if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            }
+        }
+    }
+
     private var bottomBar: some View {
         HStack {
             barButton("chevron.backward", "Back", enabled: tab.canGoBack) { tab.webView.goBack() }
@@ -190,14 +240,19 @@ struct BrowserScreen: View {
                 Toggle(isOn: $browser.adblock) {
                     Label("Block Ads & Trackers", systemImage: "shield.lefthalf.filled")
                 }
+                Button("History", systemImage: "clock") { sheet = .history }
                 Button("Check My IP", systemImage: "network") { tab.go("https://browserleaks.com/ip") }
                 Divider()
-                if browser.proxies.count > 1 {
+                if !browser.proxies.isEmpty {
                     Menu("Switch Proxy", systemImage: "arrow.triangle.swap") {
                         ForEach(browser.proxies) { p in
                             Button { browser.use(p) } label: {
-                                if p.id == browser.activeProxy?.id { Label(p.label, systemImage: "checkmark") } else { Text(p.label) }
+                                if !browser.direct && p.id == browser.activeProxy?.id { Label(p.label, systemImage: "checkmark") } else { Text(p.label) }
                             }
+                        }
+                        Divider()
+                        Button { browser.useDirect() } label: {
+                            if browser.direct { Label("No Proxy (real IP)", systemImage: "checkmark") } else { Text("No Proxy (real IP)") }
                         }
                     }
                 }
@@ -279,8 +334,25 @@ struct ProxyListView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button { browser.useDirect(); dismiss() } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: browser.direct ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(browser.direct ? Color.orange : Color.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("No Proxy").foregroundStyle(.primary)
+                                Text("Real IP and location · ad blocking still on")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(browser.direct ? "No proxy, in use" : "Use no proxy")
+                }
                 ForEach(browser.proxies) { p in
-                    let active = p.id == browser.activeProxy?.id
+                    let active = !browser.direct && p.id == browser.activeProxy?.id
                     HStack(spacing: 12) {
                         Button { browser.use(p); dismiss() } label: {
                             HStack(spacing: 12) {
@@ -303,11 +375,8 @@ struct ProxyListView: View {
                     }
                 }
                 .onDelete { browser.deleteProxies(at: $0) }
-            }
-            .overlay {
                 if browser.proxies.isEmpty {
-                    ContentUnavailableView("No Proxies", systemImage: "network",
-                                           description: Text("Tap + to add a proxy."))
+                    Text("Tap + to add a proxy.").foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Proxies")
@@ -364,6 +433,68 @@ struct ProxyEditor: View {
                     }
                     .disabled(proxy.configuration() == nil) // empty host or bad port
                 }
+            }
+        }
+    }
+}
+
+struct HistoryView: View {
+    @ObservedObject var browser: Browser
+    @ObservedObject var history: HistoryStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var confirmClear = false
+
+    struct Day: Identifiable {
+        let date: Date
+        let entries: [HistoryEntry]
+        var id: Date { date }
+    }
+
+    /// Entries grouped by day, newest day first, filtered by the search box.
+    private var days: [Day] {
+        let q = query.lowercased()
+        let list = q.isEmpty ? history.entries
+            : history.entries.filter { $0.url.lowercased().contains(q) || $0.title.lowercased().contains(q) }
+        let groups = Dictionary(grouping: list) { Calendar.current.startOfDay(for: $0.date) }
+        return groups.keys.sorted(by: >).map { Day(date: $0, entries: groups[$0] ?? []) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(days) { day in
+                    Section(day.date.formatted(date: .complete, time: .omitted)) {
+                        ForEach(day.entries) { e in
+                            Button {
+                                browser.current?.go(e.url)
+                                dismiss()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(e.title.isEmpty ? e.url : e.title).lineLimit(1).foregroundStyle(.primary)
+                                    Text(e.url).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                        }
+                        .onDelete { offsets in offsets.map { day.entries[$0] }.forEach { history.delete($0) } }
+                    }
+                }
+                if history.entries.isEmpty {
+                    Text("No history yet.").foregroundStyle(.secondary)
+                }
+            }
+            .searchable(text: $query, prompt: "Search history")
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Clear", role: .destructive) { confirmClear = true }
+                        .disabled(history.entries.isEmpty)
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .confirmationDialog("Clear all history?", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("Clear History", role: .destructive) { history.clear() }
             }
         }
     }

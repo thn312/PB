@@ -102,9 +102,9 @@ struct Geo: Decodable {
 enum YouTubeScript {
     static let remote = URL(string: "https://raw.githubusercontent.com/thn312/PB/main/Sources/youtube.js")!
 
-    static func latest(via proxy: ProxyConfiguration) async -> String {
+    static func latest(via proxy: ProxyConfiguration?) async -> String {
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.proxyConfigurations = [proxy] // through the proxy, like everything else
+        cfg.proxyConfigurations = proxy.map { [$0] } ?? [] // through the proxy, like everything else
         cfg.timeoutIntervalForRequest = 6
         let s = URLSession(configuration: cfg)
         defer { s.finishTasksAndInvalidate() }
@@ -137,9 +137,14 @@ final class Browser: ObservableObject {
     private var adRules: WKContentRuleList?
     private var spoofJS = ""
     private var youtubeJS = ""
+    let history = HistoryStore()
+    /// For app-side requests (search suggestions): same route as the tabs, proxy or direct.
+    private(set) var session: URLSession?
 
     @Published var proxies = ProxyStore.all()
     @Published var activeID = ProxyStore.activeID
+    /// No proxy: real IP, real location. Only ever on because the user picked it; a failing proxy never falls back to this.
+    @Published var direct = UserDefaults.standard.bool(forKey: "p.direct")
     private var attempt = 0
 
     var activeProxy: ProxySettings? { proxies.first { $0.id == activeID } ?? proxies.first }
@@ -147,13 +152,21 @@ final class Browser: ObservableObject {
     func use(_ p: ProxySettings) {
         activeID = p.id
         ProxyStore.activeID = p.id
+        setDirect(false)
+    }
+
+    func useDirect() { setDirect(true) }
+
+    private func setDirect(_ on: Bool) {
+        direct = on
+        UserDefaults.standard.set(on, forKey: "p.direct")
         Task { await connect() }
     }
 
     func saveProxy(_ p: ProxySettings) {
         if let i = proxies.firstIndex(where: { $0.id == p.id }) { proxies[i] = p } else { proxies.append(p) }
         ProxyStore.save(proxies)
-        if p.id == activeProxy?.id { use(p) } // edited the one in use (or the first one): reconnect with it
+        if !direct && p.id == activeProxy?.id { use(p) } // edited the one in use (or the first one): reconnect with it
     }
 
     func deleteProxies(at offsets: IndexSet) {
@@ -161,7 +174,7 @@ final class Browser: ObservableObject {
         proxies.remove(atOffsets: offsets)
         gone.forEach(ProxyStore.forget)
         ProxyStore.save(proxies)
-        if gone.contains(where: { $0.id == activeID }) || proxies.isEmpty {
+        if !direct && (gone.contains(where: { $0.id == activeID }) || proxies.isEmpty) {
             activeID = proxies.first?.id
             ProxyStore.activeID = activeID
             Task { await connect() }
@@ -173,6 +186,22 @@ final class Browser: ObservableObject {
         attempt += 1
         let mine = attempt // a newer switch wins; an older lookup that finishes late is dropped
         tabs = []; current = nil; config = nil
+        session?.invalidateAndCancel(); session = nil
+        if direct {
+            connecting = true
+            defer { if mine == attempt { connecting = false } }
+            status = "Connecting…"
+            config = makeConfig(proxy: nil)
+            spoofJS = "" // real IP, so keep the real location and timezone too
+            youtubeJS = await YouTubeScript.latest(via: nil)
+            if adRules == nil { adRules = try? await compileAdRules() }
+            guard mine == attempt else { return }
+            applyContent(reload: false)
+            status = "⚠️ Direct · real IP (no proxy)"
+            session = URLSession(configuration: .ephemeral)
+            newTab()
+            return
+        }
         guard let p = activeProxy, let proxy = p.configuration() else {
             status = "No proxy set"
             return
@@ -188,13 +217,17 @@ final class Browser: ObservableObject {
             guard let c = geo.coords, TimeZone(identifier: geo.timezone) != nil else {
                 throw BrowserError(errorDescription: "Could not read the proxy location")
             }
-            config = try makeConfig(proxy: proxy, lat: c.0, lon: c.1, tz: geo.timezone)
+            spoofJS = try makeSpoof(lat: c.0, lon: c.1, tz: geo.timezone)
+            config = makeConfig(proxy: proxy)
             youtubeJS = await yt
             if adRules == nil { adRules = try? await compileAdRules() } // a broken blocklist must not stop browsing
             guard mine == attempt else { return }
             applyContent(reload: false)
             let flag = String(String.UnicodeScalarView(geo.country.unicodeScalars.compactMap { UnicodeScalar(127397 + $0.value) }))
             status = "\(flag) \(geo.city), \(geo.region) · \(geo.ip) · \(p.label)"
+            let sc = URLSessionConfiguration.ephemeral
+            sc.proxyConfigurations = [proxy]
+            session = URLSession(configuration: sc)
             newTab("https://browserleaks.com/ip")
         } catch {
             guard mine == attempt else { return }
@@ -202,17 +235,19 @@ final class Browser: ObservableObject {
         }
     }
 
-    private func makeConfig(proxy: ProxyConfiguration, lat: Double, lon: Double, tz: String) throws -> WKWebViewConfiguration {
+    private func makeSpoof(lat: Double, lon: Double, tz: String) throws -> String {
         guard let url = Bundle.main.url(forResource: "spoof", withExtension: "js") else {
             throw BrowserError(errorDescription: "spoof.js is missing")
         }
         // JSON-encode values from the network so they can't inject JS.
         let cfg = String(decoding: try JSONSerialization.data(withJSONObject: ["lat": lat, "lon": lon, "tz": tz]), as: UTF8.self)
         // Wrapped so `C` never collides with a page's own globals.
-        spoofJS = "(C => {\n" + (try String(contentsOf: url, encoding: .utf8)) + "\n})(\(cfg));"
+        return "(C => {\n" + (try String(contentsOf: url, encoding: .utf8)) + "\n})(\(cfg));"
+    }
 
+    private func makeConfig(proxy: ProxyConfiguration?) -> WKWebViewConfiguration {
         let store = WKWebsiteDataStore.default()
-        store.proxyConfigurations = [proxy]
+        store.proxyConfigurations = proxy.map { [$0] } ?? [] // shared store: always reset, or a direct session would keep the old proxy
         let config = WKWebViewConfiguration()
         config.websiteDataStore = store
         config.allowsInlineMediaPlayback = true // like Safari: feed videos (X, etc.) play in the page, not fullscreen
@@ -238,7 +273,9 @@ final class Browser: ObservableObject {
         let yt = "(P => {\n" + youtubeJS + "\n})({\"adblock\": \(adblock)});"
         for c in controllers {
             c.removeAllUserScripts()
-            c.addUserScript(WKUserScript(source: spoofJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            if !spoofJS.isEmpty {
+                c.addUserScript(WKUserScript(source: spoofJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            }
             c.addUserScript(WKUserScript(source: yt, injectionTime: .atDocumentStart, forMainFrameOnly: false))
             c.removeAllContentRuleLists()
             if adblock, let adRules { c.add(adRules) }
@@ -316,6 +353,10 @@ final class Tab: NSObject, ObservableObject, Identifiable, WKNavigationDelegate,
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         error = ""
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        browser?.history.record(url: webView.url, title: webView.title ?? "")
     }
 
     // Never hand links to other apps (X, YouTube…): they'd run outside the proxy with the real IP.
