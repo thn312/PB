@@ -177,7 +177,7 @@ private fun BrowserScreen(b: Browser, tab: Tab, open: (Sheet) -> Unit) {
     Column(Modifier.fillMaxSize()) {
         // Address bar
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { b.setAdblock(!b.adblock) }) {
+            IconButton(onClick = { b.changeAdblock(!b.adblock) }) {
                 Icon(Icons.Filled.Shield, if (b.adblock) "Ad blocking on" else "Ad blocking off",
                     tint = if (b.adblock) Orange else MaterialTheme.colorScheme.outline)
             }
@@ -289,9 +289,9 @@ private fun BottomBar(b: Browser, tab: Tab, open: (Sheet) -> Unit) {
                     onClick = { menu = false; tab.go("https://browserleaks.com/ip") })
                 HorizontalDivider()
                 DropdownMenuItem(text = { Text("Block Ads & Trackers") }, leadingIcon = { Icon(Icons.Filled.Shield, null) },
-                    trailingIcon = { Checkbox(b.adblock, null) }, onClick = { b.setAdblock(!b.adblock) })
+                    trailingIcon = { Checkbox(b.adblock, null) }, onClick = { b.changeAdblock(!b.adblock) })
                 DropdownMenuItem(text = { Text("Allow Opening Apps") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, null) },
-                    trailingIcon = { Checkbox(b.allowApps, null) }, onClick = { b.setAllowApps(!b.allowApps) })
+                    trailingIcon = { Checkbox(b.allowApps, null) }, onClick = { b.changeAllowApps(!b.allowApps) })
                 HorizontalDivider()
                 if (b.proxies.isNotEmpty()) {
                     b.proxies.forEach { p ->

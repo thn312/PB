@@ -61,12 +61,12 @@ class Browser(val activity: MainActivity) {
 
     fun use(p: ProxyEntry) {
         activeId = p.id; prefs.activeId = p.id
-        setDirect(false)
+        switchDirect(false)
     }
 
-    fun useDirect() = setDirect(true)
+    fun useDirect() = switchDirect(true)
 
-    private fun setDirect(on: Boolean) {
+    private fun switchDirect(on: Boolean) {
         direct = on; prefs.direct = on
         scope.launch { connect() }
     }
@@ -88,13 +88,13 @@ class Browser(val activity: MainActivity) {
         }
     }
 
-    fun setAdblock(on: Boolean) {
+    fun changeAdblock(on: Boolean) {
         adblock = on; prefs.adblock = on
         tabs.forEach { it.installScripts(scripts()) }
         current?.webView?.reload()
     }
 
-    fun setAllowApps(on: Boolean) { allowApps = on; prefs.allowApps = on }
+    fun changeAllowApps(on: Boolean) { allowApps = on; prefs.allowApps = on }
 
     /** Fail closed: no tab exists until the proxy is verified, so the real IP is never used by accident. */
     suspend fun connect() {
