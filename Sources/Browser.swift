@@ -189,6 +189,7 @@ final class Browser: ObservableObject {
         store.proxyConfigurations = [proxy]
         let config = WKWebViewConfiguration()
         config.websiteDataStore = store
+        config.allowsInlineMediaPlayback = true // like Safari: feed videos (X, etc.) play in the page, not fullscreen
         // Look exactly like Safari: a bare WKWebView UA lacks "Version/x Safari/604.1", which sites use to flag in-app browsers.
         let v = UIDevice.current.systemVersion.split(separator: ".").prefix(2).joined(separator: ".")
         config.applicationNameForUserAgent = "Version/\(v.contains(".") ? v : v + ".0") Mobile/15E148 Safari/604.1"
