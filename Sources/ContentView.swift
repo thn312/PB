@@ -22,6 +22,12 @@ struct ContentView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .onSubmit { browser.go(browser.address) }
+                    // Like Safari: tapping the address bar selects it, so typing replaces the old URL.
+                    .onReceive(NotificationCenter.default.publisher(for: UITextField.textDidBeginEditingNotification)) {
+                        guard let tf = $0.object as? UITextField, tf.keyboardType == .webSearch else { return }
+                        tf.clearButtonMode = .whileEditing
+                        DispatchQueue.main.async { tf.selectAll(nil) }
+                    }
                 Button { browser.webView?.reload() } label: { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel("Reload")
                 Button { showSettings = true } label: { Image(systemName: "gearshape") }
@@ -31,6 +37,11 @@ struct ContentView: View {
             Text(browser.status)
                 .font(.caption).foregroundStyle(.secondary)
                 .lineLimit(1).padding(.bottom, 4)
+            if !browser.error.isEmpty {
+                Text(browser.error)
+                    .font(.caption).foregroundStyle(.red)
+                    .lineLimit(2).padding(.horizontal, 8).padding(.bottom, 4)
+            }
             if let wv = browser.webView {
                 WebViewHost(webView: wv).id(ObjectIdentifier(wv))
             } else {

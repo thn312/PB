@@ -82,6 +82,7 @@ final class Browser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
     @Published var webView: WKWebView?
     @Published var status = "Not connected"
     @Published var address = ""
+    @Published var error = ""
 
     /// Fail closed: no webview exists until the proxy is verified, so the real IP is never used.
     func connect() async {
@@ -139,11 +140,27 @@ final class Browser: NSObject, ObservableObject, WKNavigationDelegate, WKUIDeleg
             c.queryItems = [URLQueryItem(name: "q", value: t)]
             url = c.url
         }
-        if let url { wv.load(URLRequest(url: url)) }
+        guard let url else { error = "Invalid address: \(t)"; return }
+        error = ""
+        wv.load(URLRequest(url: url))
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         address = webView.url?.absoluteString ?? address
+        error = ""
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        report(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        report(error)
+    }
+
+    private func report(_ e: Error) {
+        guard (e as NSError).code != NSURLErrorCancelled else { return } // a newer navigation replaced this one
+        error = "⚠️ " + e.localizedDescription
     }
 
     // target="_blank" links open in the same view.
