@@ -35,6 +35,16 @@ YouTube changes its ad delivery often. The app downloads the latest `youtube.js`
    - Apple Developer account ($99/year): the app lasts 1 year.
 4. On the iPhone: Settings → General → VPN & Device Management → trust your Apple ID. Turn on **Developer Mode** if iOS asks.
 
+## Android (`android/`)
+Same features in Kotlin + Jetpack Compose, sharing `spoof.js`, `youtube.js` and `blocklist.json` with iOS. Differences:
+- **HTTP proxies only** (Android WebView can't use SOCKS5 with a password).
+- Background playback uses a foreground service with a "Playing in the background" notification.
+- Install `PB.apk` from Releases directly: no 7-day re-signing.
+
+Signing: every APK must use the same key or Android refuses to update over the old install. CI reads two repo secrets
+(Settings → Secrets and variables → Actions): `PB_KEYSTORE_B64` (base64 of the keystore) and `PB_KEYSTORE_PASSWORD`.
+Keep the keystore safe outside the repo; losing it means uninstalling PB once to switch keys.
+
 ## Install with SideStore (free, auto-refresh, no PC after setup)
 Every push to `main` publishes a GitHub Release with `PB.ipa` and a SideStore source:
 

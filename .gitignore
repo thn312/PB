@@ -4,3 +4,8 @@ Payload/
 *.ipa
 .DS_Store
 Info.plist
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.keystore
